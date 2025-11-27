@@ -385,7 +385,19 @@ class LeRobotSingleDataset(Dataset):
                         state_action_meta.end,
                     )
                     stat = np.array(le_statistics[le_modality][stat_name])
-                    dataset_statistics[our_modality][subkey][stat_name] = stat[indices].tolist()
+                    # Some stats (e.g., count) are stored as a single value even
+                    # though we index per-dimension below. When the stat only
+                    # has one entry, broadcast it across the requested indices
+                    # so the downstream tensor shapes remain consistent.
+                    if stat.size == 1:
+                        scalar_value = float(stat.reshape(-1)[0])
+                        dataset_statistics[our_modality][subkey][stat_name] = [
+                            scalar_value
+                        ] * len(indices)
+                    else:
+                        dataset_statistics[our_modality][subkey][stat_name] = (
+                            stat[indices].tolist()
+                        )
 
         # 3. Full dataset metadata
         metadata = DatasetMetadata(
@@ -582,7 +594,7 @@ class LeRobotSingleDataset(Dataset):
         else:
             chunk_index = self.get_episode_chunk(trajectory_id)
             parquet_path = self.dataset_path / self.data_path_pattern.format(
-                episode_chunk=chunk_index, episode_index=trajectory_id
+                chunk_index=chunk_index, episode_index=trajectory_id
             )
             assert parquet_path.exists(), f"Parquet file not found at {parquet_path}"
             return pd.read_parquet(parquet_path)
@@ -661,7 +673,7 @@ class LeRobotSingleDataset(Dataset):
         if original_key is None:
             original_key = key
         video_filename = self.video_path_pattern.format(
-            episode_chunk=chunk_index, episode_index=trajectory_id, video_key=original_key
+            chunk_index=chunk_index, episode_index=trajectory_id, video_key=original_key
         )
         return self.dataset_path / video_filename
 

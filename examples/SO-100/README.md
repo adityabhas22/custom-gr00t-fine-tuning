@@ -4,6 +4,13 @@
 
 This provides additional examples of `modality.json` for different lerobot datasets. Copy the relevant `modality.json` to the dataset`<DATASET_PATH>/meta/modality.json`
 
+- `so101_tricam__modality.json` matches the dual SO-101 arm + tri-camera setup highlighted in the [NVIDIA GR00T N1.5 SO-101 tutorial](https://huggingface.co/blog/nvidia/gr00t-n1-5-so101-tuning). It expects the state/action split (`left_arm`, `left_gripper`, `right_arm`, `right_gripper`) and remaps videos to `top`, `left_gripper`, and `right_gripper`. Use it when packaging datasets like `data/so101-table-cleanup`.
+
+### Data config for fine-tuning
+
+- Pass `--data_config so101_tricam_bimanual --dataset_path data/so101-table-cleanup` to `scripts/gr00t_finetune.py` (or `scripts/eval_policy.py`) once the dataset’s `meta/modality.json` matches the example above. This wires the dual-arm state/action layout and tri-camera video stack into the built-in transforms so the trainer can normalize joints and grippers separately.
+- Run `python scripts/load_dataset.py --dataset_path data/so101-table-cleanup --embodiment_tag new_embodiment` to sanity-check the modality split before training.
+
 
 ## Eval GR00T N1 on SO100 and SO101
 

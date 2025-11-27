@@ -22,7 +22,7 @@ import pathlib
 import time
 from dataclasses import dataclass, field
 from pprint import pprint
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -36,6 +36,11 @@ from gr00t.data.dataset import (
 )
 from gr00t.data.embodiment_tags import EMBODIMENT_TAG_MAPPING, EmbodimentTag
 from gr00t.utils.misc import any_describe
+
+try:
+    import imageio.v2 as imageio
+except ImportError:  # pragma: no cover - optional dependency
+    imageio = None
 
 
 def print_yellow(text: str) -> None:
@@ -61,6 +66,9 @@ class ArgsConfig:
 
     steps: int = 200
     """Number of steps to plot."""
+
+    gif_output_dir: Optional[str] = None
+    """Optional directory to save GIF previews for each video modality."""
 
 
 #####################################################################################
@@ -88,7 +96,7 @@ def get_modality_keys(dataset_path: pathlib.Path) -> dict[str, list[str]]:
 def plot_state_action_space(
     state_dict: dict[str, np.ndarray],
     action_dict: dict[str, np.ndarray],
-    shared_keys: list[str] = ["left_arm", "right_arm", "left_hand", "right_hand"],
+    shared_keys: Optional[list[str]] = None,
 ):
     """
     Plot the state and action space side by side.
@@ -97,6 +105,11 @@ def plot_state_action_space(
     action_dict: dict[str, np.ndarray] with key: [Time, Dimension]
     shared_keys: list[str] of keys to plot (without the "state." or "action." prefix)
     """
+    if shared_keys is None:
+        state_keys = {key.split(".", 1)[1] for key in state_dict}
+        action_keys = {key.split(".", 1)[1] for key in action_dict}
+        shared_keys = sorted(state_keys & action_keys)
+
     # Create a figure with one subplot per shared key
     fig = plt.figure(figsize=(16, 4 * len(shared_keys)))
 
@@ -187,6 +200,7 @@ def load_dataset(
     video_backend: str = "decord",
     steps: int = 200,
     plot_state_action: bool = False,
+    gif_output_dir: Optional[str] = None,
 ):
     assert len(dataset_path) > 0, "dataset_path must be a list of at least one path"
 
@@ -290,28 +304,28 @@ def load_dataset(
         else:
             print(f"{key}: {value}")
 
-    # 6. plot the first 100 images
-    images_list = []
-    video_key = video_modality_keys[0]  # we will use the first video modality
+    # 6. gather frames for every video modality
+    frames_by_video: dict[str, list[np.ndarray]] = {key: [] for key in video_modality_keys}
+    sampled_steps: list[int] = []
 
     state_dict = {key: [] for key in state_modality_keys}
     action_dict = {key: [] for key in action_modality_keys}
 
-    total_images = 20  # show 20 images
-    skip_frames = steps // total_images
+    total_images = max(1, min(steps, 40))
+    skip_frames = max(1, steps // total_images)
 
     for i in range(steps):
         resp = dataset[i]
         if i % skip_frames == 0:
-            img = resp[video_key][0]
-            # cv2 show the image
-            # plot_image(img)
+            sampled_steps.append(i)
             if language_modality_keys:
                 lang_key = language_modality_keys[0]
                 print(f"Image {i}, prompt: {resp[lang_key]}")
             else:
                 print(f"Image {i}")
-            images_list.append(img.copy())
+            for video_key in video_modality_keys:
+                frame = resp[video_key][0]
+                frames_by_video[video_key].append(frame.copy())
 
         for state_key in state_modality_keys:
             state_dict[state_key].append(resp[state_key][0])
@@ -329,13 +343,40 @@ def load_dataset(
         plot_state_action_space(state_dict, action_dict)
         print("Plotted state and action space")
 
-    fig, axs = plt.subplots(4, total_images // 4, figsize=(20, 10))
-    for i, ax in enumerate(axs.flat):
-        ax.imshow(images_list[i])
-        ax.axis("off")
-        ax.set_title(f"Image {i*skip_frames}")
-    plt.tight_layout()  # adjust the subplots to fit into the figure area.
-    plt.show()
+    if video_modality_keys:
+        rows = len(video_modality_keys)
+        cols = max(len(frames) for frames in frames_by_video.values()) or 1
+        fig, axs = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
+        if rows == 1:
+            axs = np.array([axs])
+        for row_idx, video_key in enumerate(video_modality_keys):
+            row_frames = frames_by_video[video_key]
+            for col_idx in range(cols):
+                ax = axs[row_idx, col_idx]
+                if col_idx < len(row_frames):
+                    ax.imshow(row_frames[col_idx])
+                    step = sampled_steps[col_idx] if col_idx < len(sampled_steps) else col_idx * skip_frames
+                    ax.set_title(f"{video_key} | t={step}")
+                    ax.axis("off")
+                else:
+                    ax.axis("off")
+        plt.tight_layout()
+        plt.show()
+
+    if gif_output_dir:
+        if imageio is None:
+            print_yellow(
+                "imageio is not installed; run `pip install imageio` to enable GIF exports."
+            )
+        else:
+            output_dir = pathlib.Path(gif_output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for video_key, frames in frames_by_video.items():
+                if len(frames) < 2:
+                    continue
+                gif_path = output_dir / f"{video_key.replace('.', '_')}.gif"
+                imageio.mimsave(gif_path, frames, fps=10)
+                print(f"Saved preview for {video_key} to {gif_path}")
 
 
 if __name__ == "__main__":
@@ -346,4 +387,5 @@ if __name__ == "__main__":
         config.video_backend,
         config.steps,
         config.plot_state_action,
+        config.gif_output_dir,
     )

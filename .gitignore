@@ -22,7 +22,7 @@ share/python-wheels/
 MANIFEST
 
 # build artifacts
-
+/data
 .eggs/
 .mypy_cache
 *.egg-info/

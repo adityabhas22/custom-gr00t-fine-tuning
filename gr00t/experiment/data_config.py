@@ -274,6 +274,84 @@ class So100DualCamDataConfig(So100DataConfig):
 ###########################################################################################
 
 
+class So101TriCamBimanualDataConfig(BaseDataConfig):
+    video_keys = ["video.top", "video.left_gripper", "video.right_gripper"]
+    state_keys = [
+        "state.left_arm",
+        "state.left_gripper",
+        "state.right_arm",
+        "state.right_gripper",
+    ]
+    action_keys = [
+        "action.left_arm",
+        "action.left_gripper",
+        "action.right_arm",
+        "action.right_gripper",
+    ]
+    language_keys = ["annotation.human.task_description"]
+    observation_indices = [0]
+    action_indices = list(range(16))
+
+    state_normalization_modes = {
+        "state.left_arm": "min_max",
+        "state.left_gripper": "min_max",
+        "state.right_arm": "min_max",
+        "state.right_gripper": "min_max",
+    }
+    action_normalization_modes = {
+        "action.left_arm": "min_max",
+        "action.left_gripper": "min_max",
+        "action.right_arm": "min_max",
+        "action.right_gripper": "min_max",
+    }
+
+    def transform(self) -> ModalityTransform:
+        transforms = [
+            VideoToTensor(apply_to=self.video_keys),
+            VideoCrop(apply_to=self.video_keys, scale=0.95),
+            VideoResize(
+                apply_to=self.video_keys,
+                height=224,
+                width=224,
+                interpolation="linear",
+            ),
+            VideoColorJitter(
+                apply_to=self.video_keys,
+                brightness=0.3,
+                contrast=0.4,
+                saturation=0.5,
+                hue=0.08,
+            ),
+            VideoToNumpy(apply_to=self.video_keys),
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes=self.state_normalization_modes,
+            ),
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes=self.action_normalization_modes,
+            ),
+            ConcatTransform(
+                video_concat_order=self.video_keys,
+                state_concat_order=self.state_keys,
+                action_concat_order=self.action_keys,
+            ),
+            GR00TTransform(
+                state_horizon=len(self.observation_indices),
+                action_horizon=len(self.action_indices),
+                max_state_dim=64,
+                max_action_dim=32,
+            ),
+        ]
+
+        return ComposedModalityTransform(transforms=transforms)
+
+
+###########################################################################################
+
+
 class UnitreeG1DataConfig(BaseDataConfig):
     video_keys = ["video.rs_view"]
     state_keys = ["state.left_arm", "state.right_arm", "state.left_hand", "state.right_hand"]
@@ -781,6 +859,7 @@ DATA_CONFIG_MAP = {
     "single_panda_gripper": SinglePandaGripperDataConfig(),
     "so100": So100DataConfig(),
     "so100_dualcam": So100DualCamDataConfig(),
+    "so101_tricam_bimanual": So101TriCamBimanualDataConfig(),
     "unitree_g1": UnitreeG1DataConfig(),
     "unitree_g1_full_body": UnitreeG1FullBodyDataConfig(),
     "oxe_droid": OxeDroidDataConfig(),
