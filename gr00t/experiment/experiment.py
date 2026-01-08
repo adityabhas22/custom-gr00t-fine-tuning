@@ -104,10 +104,11 @@ def run(config: Config):
     # If using distributed training, initialize the process group
     if dist.is_initialized():
         global_rank = dist.get_rank()
-    elif "WORLD_SIZE" in os.environ and int(os.environ["WORLD_SIZE"]) > 1:
+    elif "WORLD_SIZE" in os.environ:
+        # Initialize even for single GPU when using torchrun
         dist.init_process_group(backend="nccl")
         # only meaningful for torchrun, for ray it is always 0
-        local_rank = int(os.environ["LOCAL_RANK"])
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(local_rank)
         global_rank = dist.get_rank()
     else:
