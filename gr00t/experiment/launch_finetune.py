@@ -43,10 +43,11 @@ if __name__ == "__main__":
                 "download_cache": False,
                 "datasets": [
                     {
-                        "dataset_paths": [ft_config.dataset_path],
-                        "mix_ratio": 1.0,
+                        "dataset_paths": [p],
+                        "mix_ratio": 1.0,  # Equal weight for all datasets
                         "embodiment_tag": embodiment_tag,
                     }
+                    for p in ft_config.dataset_paths
                 ],
             }
         }
