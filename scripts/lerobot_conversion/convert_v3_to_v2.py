@@ -38,7 +38,15 @@ from lerobot.datasets.utils import (
     unflatten_dict,
     write_info,
 )
-from lerobot.constants import HF_LEROBOT_HOME
+try:
+    from lerobot.constants import HF_LEROBOT_HOME
+except (ImportError, ModuleNotFoundError):
+    try:
+        from lerobot.utils.constants import HF_LEROBOT_HOME
+    except (ImportError, ModuleNotFoundError):
+        from pathlib import Path
+        import os
+        HF_LEROBOT_HOME = Path(os.getenv("HF_LEROBOT_HOME", "~/.cache/huggingface/lerobot")).expanduser()
 # from lerobot.utils.utils import init_logging
 
 def init_logging():
