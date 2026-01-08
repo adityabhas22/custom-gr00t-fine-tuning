@@ -33,20 +33,22 @@ if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[3]))
 from lerobot.datasets.utils import (
     DEFAULT_CHUNK_SIZE,
-    DEFAULT_DATA_PATH,
-    DEFAULT_VIDEO_PATH,
-    EPISODES_DIR,
-    LEGACY_EPISODES_PATH,
-    LEGACY_EPISODES_STATS_PATH,
-    LEGACY_TASKS_PATH,
     load_info,
-    load_tasks,
     serialize_dict,
+    unflatten_dict,
     unflatten_dict,
     write_info,
 )
-from lerobot.utils.constants import HF_LEROBOT_HOME
-from lerobot.utils.utils import init_logging
+from lerobot.constants import HF_LEROBOT_HOME
+# from lerobot.utils.utils import init_logging
+
+def init_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
 
 
 V21 = "v2.1"
@@ -56,6 +58,14 @@ LEGACY_DATA_PATH_TEMPLATE = "data/chunk-{episode_chunk:03d}/episode_{episode_ind
 LEGACY_VIDEO_PATH_TEMPLATE = (
     "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
 )
+
+# Constants missing from newer lerobot versions
+DEFAULT_DATA_PATH = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
+DEFAULT_VIDEO_PATH = "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
+EPISODES_DIR = "meta/episodes"
+LEGACY_EPISODES_PATH = "meta/episodes.jsonl"
+LEGACY_EPISODES_STATS_PATH = "meta/episodes_stats.jsonl"
+LEGACY_TASKS_PATH = "meta/tasks.jsonl"
 
 MIN_VIDEO_DURATION = 1e-6
 
@@ -82,6 +92,21 @@ def validate_local_dataset_version(local_path: Path) -> None:
             f"Local dataset has codebase version '{dataset_version}', expected '{V30}'. "
             f"This script converts datasets from v3.0 back to v2.1."
         )
+
+
+def load_tasks(root: Path) -> Any:
+    """Load tasks from parquet file in v3 format."""
+    import pandas as pd
+    tasks_path = root / "meta/tasks.parquet"
+    if not tasks_path.exists():
+        # Fallback to jsonl if parquet doesn't exist (some v3 datasets might vary)
+        tasks_jsonl = root / "meta/tasks.jsonl"
+        if tasks_jsonl.exists():
+             import jsonlines
+             with jsonlines.open(tasks_jsonl) as reader:
+                 return pd.DataFrame(list(reader))
+        raise FileNotFoundError(f"No tasks parquet file found in {tasks_path}")
+    return pd.read_parquet(tasks_path)
 
 
 def load_episode_records(root: Path) -> list[dict[str, Any]]:
@@ -288,6 +313,8 @@ def _extract_video_segment(
     dst: Path,
     start: float,
     end: float,
+    reencode: bool = False,
+    reencode_codec: str = "h264",
 ) -> None:
     # Validate paths to prevent security issues
     _validate_video_paths(src, dst)
@@ -320,13 +347,63 @@ def _extract_video_segment(
         str(src),
         "-t",
         f"{duration:.6f}",
-        "-c",
-        "copy",
-        "-avoid_negative_ts",
-        "1",
-        "-y",
-        str(dst),
     ]
+
+    if reencode:
+        if reencode_codec == "h264":
+            cmd.extend(
+                [
+                    "-c:v",
+                    "libx264",
+                    "-crf",
+                    "18",
+                    "-preset",
+                    "medium",
+                    "-g",
+                    "30",
+                    "-keyint_min",
+                    "30",
+                    "-sc_threshold",
+                    "0",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                ]
+            )
+        elif reencode_codec == "av1":
+            cmd.extend(
+                [
+                    "-c:v",
+                    "libsvtav1",
+                    "-crf",
+                    "30",
+                    "-g",
+                    "30",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                ]
+            )
+        else:
+            raise ValueError(f"Unknown codec: {reencode_codec}")
+    else:
+        cmd.extend(
+            [
+                "-c",
+                "copy",
+                "-avoid_negative_ts",
+                "1",
+            ]
+        )
+
+    cmd.extend(
+        [
+            "-y",
+            str(dst),
+        ]
+    )
 
     try:
         # Use more secure subprocess call with explicit timeout
@@ -356,6 +433,8 @@ def convert_videos(
     episode_records: list[dict[str, Any]],
     video_keys: list[str],
     chunks_size: int,
+    reencode: bool = False,
+    reencode_codec: str = "h264",
 ) -> None:
     if len(video_keys) == 0:
         logging.info("No video features detected; skipping video conversion")
@@ -396,7 +475,14 @@ def convert_videos(
                     episode_index=episode_index,
                 )
 
-                _extract_video_segment(src_path, dest_path, start=start, end=end)
+                _extract_video_segment(
+                    src_path,
+                    dest_path,
+                    start=start,
+                    end=end,
+                    reencode=reencode,
+                    reencode_codec=reencode_codec,
+                )
 
 
 def convert_episodes_metadata(new_root: Path, episode_records: list[dict[str, Any]]) -> None:
@@ -463,6 +549,8 @@ def convert_dataset(
     repo_id: str,
     root: str | Path | None = None,
     force_conversion: bool = False,
+    reencode: bool = False,
+    reencode_codec: str = "h264",
 ) -> None:
     root = HF_LEROBOT_HOME / repo_id if root is None else Path(root) / repo_id
 
@@ -496,7 +584,15 @@ def convert_dataset(
     copy_global_stats(root, new_root)
     convert_tasks(root, new_root)
     convert_data(root, new_root, episode_records, chunks_size)
-    convert_videos(root, new_root, episode_records, video_keys, chunks_size)
+    convert_videos(
+        root,
+        new_root,
+        episode_records,
+        video_keys,
+        chunks_size,
+        reencode=reencode,
+        reencode_codec=reencode_codec,
+    )
     convert_episodes_metadata(new_root, episode_records)
     copy_ancillary_directories(root, new_root)
 
@@ -522,6 +618,18 @@ def parse_args() -> argparse.Namespace:
         "--force-conversion",
         action="store_true",
         help="Ignore any existing local snapshot and re-download it from the Hub.",
+    )
+    parser.add_argument(
+        "--reencode",
+        action="store_true",
+        help="Re-encode videos instead of copying streams (useful for fixing codec compatibility).",
+    )
+    parser.add_argument(
+        "--reencode-codec",
+        type=str,
+        default="h264",
+        choices=["h264", "av1"],
+        help="Codec to use for re-encoding (default: h264).",
     )
     return parser.parse_args()
 
