@@ -289,6 +289,47 @@ def get_frames_by_indices(
         cap.release()
         frames = np.array(frames)
         return frames
+    elif video_backend == "torchvision_av":
+        # Use pyAV backend via torchvision - works on aarch64/DGX Spark
+        torchvision.set_video_backend("pyav")
+        
+        # Open video and get metadata
+        reader = torchvision.io.VideoReader(video_path, "video")
+        metadata = reader.get_metadata()
+        fps = metadata["video"]["fps"][0]
+        
+        # Convert indices to timestamps
+        indices = np.array(indices)
+        min_idx, max_idx = int(indices.min()), int(indices.max())
+        
+        # Seek to first frame and load all frames up to max_idx
+        first_ts = min_idx / fps
+        reader.seek(first_ts, keyframes_only=True)
+        
+        loaded_frames = []
+        loaded_indices = []
+        for frame in reader:
+            current_ts = frame["pts"]
+            current_idx = int(round(current_ts * fps))
+            loaded_frames.append(frame["data"])
+            loaded_indices.append(current_idx)
+            if current_idx >= max_idx:
+                break
+        
+        reader.container.close()
+        reader = None
+        
+        # Map requested indices to loaded frames
+        loaded_indices = np.array(loaded_indices)
+        result_frames = []
+        for idx in indices:
+            # Find closest loaded frame
+            closest_pos = np.abs(loaded_indices - idx).argmin()
+            result_frames.append(loaded_frames[closest_pos])
+        
+        frames = np.stack(result_frames)
+        # Convert from CHW to HWC format
+        return frames.transpose(0, 2, 3, 1)
     else:
         raise NotImplementedError
 
