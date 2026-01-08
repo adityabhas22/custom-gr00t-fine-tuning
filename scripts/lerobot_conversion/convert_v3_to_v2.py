@@ -34,7 +34,6 @@ if __package__ is None or __package__ == "":
 from lerobot.datasets.utils import (
     DEFAULT_CHUNK_SIZE,
     load_info,
-    serialize_dict,
     unflatten_dict,
     unflatten_dict,
     write_info,
@@ -68,6 +67,7 @@ LEGACY_EPISODES_STATS_PATH = "meta/episodes_stats.jsonl"
 LEGACY_TASKS_PATH = "meta/tasks.jsonl"
 
 MIN_VIDEO_DURATION = 1e-6
+LEGACY_STATS_KEYS = ("mean", "std", "min", "max", "count")
 
 
 def _to_serializable(value: Any) -> Any:
@@ -82,6 +82,23 @@ def _to_serializable(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _to_serializable(val) for key, val in value.items()}
     return value
+
+
+def _filter_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    """Remove v3-only statistics keys so output matches the v2.1 schema."""
+    filtered: dict[str, Any] = {}
+    for feature, values in stats.items():
+        if not isinstance(values, dict):
+            continue
+        keep = {k: v for k, v in values.items() if k in LEGACY_STATS_KEYS}
+        if keep:
+            filtered[feature] = keep
+    return filtered
+
+
+def serialize_dict(data: dict[str, Any]) -> dict[str, Any]:
+    """Local robust implementation of serialize_dict that handles lists and numpy types."""
+    return _to_serializable(data)
 
 
 def validate_local_dataset_version(local_path: Path) -> None:
@@ -315,6 +332,7 @@ def _extract_video_segment(
     end: float,
     reencode: bool = False,
     reencode_codec: str = "h264",
+    hw_accel: str = "cpu",
 ) -> None:
     # Validate paths to prevent security issues
     _validate_video_paths(src, dst)
@@ -335,6 +353,10 @@ def _extract_video_segment(
 
     dst.parent.mkdir(parents=True, exist_ok=True)
 
+    if dst.exists() and dst.stat().st_size > 0:
+        # Skip if video already exists (allows resuming conversion)
+        return
+
     # Build command with validated parameters
     cmd = [
         "ffmpeg",
@@ -351,26 +373,50 @@ def _extract_video_segment(
 
     if reencode:
         if reencode_codec == "h264":
-            cmd.extend(
-                [
-                    "-c:v",
-                    "libx264",
-                    "-crf",
-                    "18",
-                    "-preset",
-                    "medium",
-                    "-g",
-                    "30",
-                    "-keyint_min",
-                    "30",
-                    "-sc_threshold",
-                    "0",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-movflags",
-                    "+faststart",
-                ]
-            )
+            if hw_accel == "nvenc":
+                # NVIDIA NVENC hardware encoder - much faster on GPUs
+                cmd.extend(
+                    [
+                        "-c:v",
+                        "h264_nvenc",
+                        "-preset",
+                        "p4",  # medium quality/speed tradeoff
+                        "-rc",
+                        "vbr",  # variable bitrate
+                        "-cq",
+                        "19",  # quality level (lower = better, 19 is visually lossless)
+                        "-b:v",
+                        "0",  # no bitrate limit, let cq control quality
+                        "-g",
+                        "30",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-movflags",
+                        "+faststart",
+                    ]
+                )
+            else:
+                # CPU-based libx264 encoder
+                cmd.extend(
+                    [
+                        "-c:v",
+                        "libx264",
+                        "-crf",
+                        "18",
+                        "-preset",
+                        "medium",
+                        "-g",
+                        "30",
+                        "-keyint_min",
+                        "30",
+                        "-sc_threshold",
+                        "0",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-movflags",
+                        "+faststart",
+                    ]
+                )
         elif reencode_codec == "av1":
             cmd.extend(
                 [
@@ -435,6 +481,7 @@ def convert_videos(
     chunks_size: int,
     reencode: bool = False,
     reencode_codec: str = "h264",
+    hw_accel: str = "cpu",
 ) -> None:
     if len(video_keys) == 0:
         logging.info("No video features detected; skipping video conversion")
@@ -482,6 +529,7 @@ def convert_videos(
                     end=end,
                     reencode=reencode,
                     reencode_codec=reencode_codec,
+                    hw_accel=hw_accel,
                 )
 
 
@@ -521,7 +569,7 @@ def convert_episodes_metadata(new_root: Path, episode_records: list[dict[str, An
 
             stats_flat = {key: record[key] for key in record if key.startswith("stats/")}
             stats_nested = unflatten_dict(stats_flat).get("stats", {})
-            stats_serialized = serialize_dict(stats_nested)
+            stats_serialized = serialize_dict(_filter_stats(stats_nested))
             stats_writer.write(
                 {
                     "episode_index": int(record["episode_index"]),
@@ -551,6 +599,7 @@ def convert_dataset(
     force_conversion: bool = False,
     reencode: bool = False,
     reencode_codec: str = "h264",
+    hw_accel: str = "cpu",
 ) -> None:
     root = HF_LEROBOT_HOME / repo_id if root is None else Path(root) / repo_id
 
@@ -592,6 +641,7 @@ def convert_dataset(
         chunks_size,
         reencode=reencode,
         reencode_codec=reencode_codec,
+        hw_accel=hw_accel,
     )
     convert_episodes_metadata(new_root, episode_records)
     copy_ancillary_directories(root, new_root)
@@ -630,6 +680,13 @@ def parse_args() -> argparse.Namespace:
         default="h264",
         choices=["h264", "av1"],
         help="Codec to use for re-encoding (default: h264).",
+    )
+    parser.add_argument(
+        "--hw-accel",
+        type=str,
+        default="cpu",
+        choices=["cpu", "nvenc"],
+        help="Hardware acceleration for encoding. Use 'nvenc' on NVIDIA GPUs (e.g., DGX Spark) for 10-50x faster encoding.",
     )
     return parser.parse_args()
 
