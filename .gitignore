@@ -103,6 +103,14 @@ dist
 
 # Data
 !**/alpaca-data-conversation.json
+any4lerobot/
+any4lerobot_external/
+folding-laundry-checkpoints/
+folding-laundry-v21-checkpoints/
+gr00t_mixed_training/
+outputs/
+torchcodec/
+nvidia_smi_q.txt
 
 # Editor
 .idea

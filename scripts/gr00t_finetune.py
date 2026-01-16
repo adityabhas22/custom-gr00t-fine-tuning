@@ -16,9 +16,13 @@
 import os
 import subprocess
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Literal
+
+# Suppress torchvision video deprecation warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.io")
 
 import torch
 import tyro
@@ -127,10 +131,12 @@ class ArgsConfig:
     """Video backend to use for training. [torchcodec, decord, torchvision_av]"""
 
     # Mixture dataset parameters
+    dataset_weights: List[float] = None
+    """Sampling weights for each dataset (must match length of dataset_path). Default: equal weights (0.5 each for 2 datasets, etc.)"""
+
     balance_dataset_weights: bool = True
     """Used in LeRobotMixtureDataset. If True, we will balance the dataset weights, by multiplying the total trajectory to each dataset"""
 
-    # Mixture dataset parameters
     balance_trajectory_weights: bool = True
     """Used in LeRobotMixtureDataset. If True, sample trajectories within a dataset weighted by their length; otherwise, equal weighting."""
 
@@ -225,10 +231,25 @@ def main(config: ArgsConfig):
             )
             single_datasets.append(dataset)
 
+        # Determine dataset weights
+        if config.dataset_weights is not None:
+            assert len(config.dataset_weights) == len(single_datasets), \
+                f"Number of dataset_weights ({len(config.dataset_weights)}) must match number of datasets ({len(single_datasets)})"
+            weights = config.dataset_weights
+            # Scale weights so the maximum weight is at least 1.0 to satisfy LeRobotMixtureDataset's primary dataset requirement
+            max_weight = max(weights)
+            if max_weight < 1.0:
+                weights = [w / max_weight for w in weights]
+            print(f"Using custom dataset weights: {weights}")
+        else:
+            # Default: equal weights of 1.0 for each dataset
+            weights = [1.0] * len(single_datasets)
+            print(f"Using equal dataset weights: {weights}")
+
         train_dataset = LeRobotMixtureDataset(
             data_mixture=[
-                (dataset, 1.0)  # we will use equal weights for all datasets
-                for dataset in single_datasets
+                (dataset, weight)
+                for dataset, weight in zip(single_datasets, weights)
             ],
             mode="train",
             balance_dataset_weights=config.balance_dataset_weights,
@@ -238,7 +259,7 @@ def main(config: ArgsConfig):
                 "percentile_mixing_method": "weighted_average",
             },
         )
-        print(f"Loaded {len(single_datasets)} datasets, with {config.dataset_path} ")
+        print(f"Loaded {len(single_datasets)} datasets with weights {weights}: {config.dataset_path}")
 
     # ------------ step 2: load model ------------
     # First, get the data config to determine action horizon
